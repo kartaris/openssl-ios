@@ -22,6 +22,8 @@ fi
 # COMPILE #
 ###########
 
+ROOTDIR=${PWD}
+
 export OUTDIR=output
 export BUILDDIR=build
 export IPHONEOS_DEPLOYMENT_TARGET="9.3"
@@ -35,7 +37,7 @@ function build() {
     echo "Building openssl for ${ARCH}..."
 
     WORKDIR=openssl_${ARCH}
-    mkdir "${WORKDIR}"
+    mkdir -p "${WORKDIR}"
     tar -xzf "../${ARCHIVE}" -C "${WORKDIR}" --strip-components 1
     cd "${WORKDIR}"
 
@@ -47,9 +49,13 @@ function build() {
 
     export LDFLAGS="-arch ${ARCH} -isysroot ${SDKDIR}"
 
-    ./configure -shared -no-asm -no-engine -no-async -no-hw ${HOST} > "${LOG}" 2>&1
+    echo "+ Activating Static Engine for ${ARCH}"
+    sed -ie 's/\"engine/\"dynamic-engine/' ./Configurations/15-ios.conf
+
+    ./configure no-shared no-asm no-async no-hw --prefix=${ROOTDIR}/${OUTDIR}/${ARCH}/openssl ${HOST} > "${LOG}" 2>&1
 
     make -j $(sysctl -n hw.logicalcpu_max) >> "${LOG}" 2>&1
+    make install_sw >> "${LOG}" 2>&1
 
     cd ../
 }
@@ -59,7 +65,7 @@ mkdir ${OUTDIR}
 mkdir ${BUILDDIR}
 cd ${BUILDDIR}
 
-build armv7s   ios-xcrun           $(xcrun --sdk iphoneos --show-sdk-path)
+build armv7    ios-xcrun           $(xcrun --sdk iphoneos --show-sdk-path)
 build arm64    ios64-xcrun         $(xcrun --sdk iphoneos --show-sdk-path)
 build x86_64   iossimulator-xcrun  $(xcrun --sdk iphonesimulator --show-sdk-path)
 
@@ -67,15 +73,22 @@ cd ../
 
 rm ${ARCHIVE}
 
-lipo ${BUILDDIR}/openssl_armv7s/libssl.a \
-   -arch arm64 ${BUILDDIR}/openssl_arm64/libssl.a \
-   -arch x86_64 ${BUILDDIR}/openssl_x86_64/libssl.a \
-   -create -output ${OUTDIR}/libssl.a
+mkdir -p ${OUTDIR}/combined/openssl/lib/pkgconfig/
+mkdir -p ${OUTDIR}/combined/openssl/include/openssl/
 
-lipo ${BUILDDIR}/openssl_armv7s/libcrypto.a \
-   -arch arm64 ${BUILDDIR}/openssl_arm64/libcrypto.a \
-   -arch x86_64 ${BUILDDIR}/openssl_x86_64/libcrypto.a \
-   -create -output ${OUTDIR}/libcrypto.a
+lipo \
+   -arch x86_64 ${OUTDIR}/x86_64/openssl/lib/libssl.a \
+   -arch armv7 ${OUTDIR}/armv7/openssl/lib/libssl.a \
+   -arch arm64 ${OUTDIR}/arm64/openssl/lib/libssl.a \
+   -create -output ${OUTDIR}/combined/openssl/lib/libssl.a
+
+lipo \
+   -arch x86_64 ${OUTDIR}/x86_64/openssl/lib/libcrypto.a \
+   -arch armv7 ${OUTDIR}/armv7/openssl/lib/libcrypto.a \
+   -arch arm64 ${OUTDIR}/arm64/openssl/lib/libcrypto.a \
+   -create -output ${OUTDIR}/combined/openssl/lib/libcrypto.a
+
+cp -r ${OUTDIR}/x86_64/openssl/include/openssl/*.h ${OUTDIR}/combined/openssl/include/openssl/
 
 ###########
 # PACKAGE #
@@ -92,11 +105,13 @@ LIBTOOL_FLAGS="-no_warning_for_no_symbols -static"
 
 echo "Creating ${FWNAME}.framework"
 mkdir -p ${FWNAME}.framework/Headers/
-libtool ${LIBTOOL_FLAGS} -o ${FWNAME}.framework/${FWNAME} ${OUTDIR}/libssl.a ${OUTDIR}/libcrypto.a
-cp -r ${BUILDDIR}/openssl_arm64/include/${FWNAME}/*.h ${FWNAME}.framework/Headers/
+libtool ${LIBTOOL_FLAGS} -o ${FWNAME}.framework/${FWNAME} ${OUTDIR}/combined/openssl/lib/libssl.a ${OUTDIR}/combined/openssl/lib/libcrypto.a
+cp -r ${OUTDIR}/combined/openssl/include/${FWNAME}/*.h ${FWNAME}.framework/Headers/
 
 rm -rf ${BUILDDIR}
-rm -rf ${OUTDIR}
+# rm -rf ${OUTDIR}/armv7
+# rm -rf ${OUTDIR}/arm64
+# rm -rf ${OUTDIR}/x86_64
 
 cp "Info.plist" ${FWNAME}.framework/Info.plist
 
